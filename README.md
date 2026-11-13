@@ -7,9 +7,11 @@ same LLVM as the Rust toolchain in
 [CDEF-inc/rx-rust](https://github.com/CDEF-inc/rx-rust), so C, C++, assembly
 and Rust objects link together.
 
-Status: experimental. No release is available yet; the CI builds the
-archives (the `rx-clang-x86_64-linux` artifact of the CI workflow and
-`rx-clang-x86_64-windows` of the Windows workflow).
+Status: experimental. The archives are on the
+[releases page](https://github.com/CDEF-inc/rx-clang/releases), each with its
+SBOMs; the CI also builds them for every commit (the `rx-clang-x86_64-linux`
+artifact of the CI workflow and `rx-clang-x86_64-windows` of the Windows
+workflow).
 
 ## What is in the archive
 
@@ -37,7 +39,9 @@ comes with [rx-rust's releases](https://github.com/CDEF-inc/rx-rust/releases).
 
 ## Install
 
-Unpack the archive anywhere and put its `bin` on `PATH`:
+Download the archive from the
+[latest release](https://github.com/CDEF-inc/rx-clang/releases/latest),
+unpack it anywhere and put its `bin` on `PATH`:
 
 ```bash
 tar -xJf rx-clang-x86_64-linux.tar.xz
