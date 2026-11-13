@@ -134,8 +134,8 @@ def main():
         f"git+{GH}/llvm-project.git@{a.llvm}", "Apache-2.0 WITH LLVM-exception",
         purl=f"pkg:github/CDEF-inc/llvm-project@{a.llvm}",
         comment=f"The LLVM fork with the RX backend ({a.clang_version}): clang, "
-                "clang's resource headers, lld (ld.lld), llvm-mc, llc and the "
-                "LLVM binary tools."))
+                "clang's resource headers, compiler-rt's builtins, lld (ld.lld), "
+                "llvm-mc, llc and the LLVM binary tools."))
 
     doc = {
         "spdxVersion": "SPDX-2.3",

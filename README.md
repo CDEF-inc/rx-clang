@@ -26,11 +26,12 @@ Visual C++ redistributable) hold `rx-clang-x86_64-linux/` or
 | `bin/llc` | the LLVM IR compiler |
 | `bin/llvm-ar` (`llvm-ranlib`), `llvm-objcopy` (`llvm-strip`), `llvm-objdump`, `llvm-nm`, `llvm-size`, `llvm-readobj` (`llvm-readelf`), `llvm-strings`, `llvm-symbolizer` (`llvm-addr2line`), `llvm-cxxfilt`, `llvm-dwarfdump` | the binary tools |
 | `lib/clang/N/include` | clang's resource headers: `stddef.h`, `stdint.h`, `stdarg.h`, `stdbool.h`, `limits.h`, `float.h`, ... |
+| `lib/clang/N/lib/rx-unknown-none-elf/libclang_rt.builtins.a` | compiler-rt's builtins: soft-float `float` / `double` arithmetic, 64-bit division and shifts, ... (the driver links it) |
 | `VERSIONS` | the commits it was built from (rx-clang, llvm-project) and the glibc it needs |
 | `LICENSE.TXT` | llvm-project's license |
 | `SBOM.spdx.json`, `SBOM.cdx.json` | the software bill of materials (SPDX 2.3, CycloneDX 1.6) |
 
-There is no C library, C++ library or compiler run-time library in it (see
+There is no C library or C++ library in it (see
 [C and C++ libraries](#c-and-c-libraries)), and no emulator: qemu-system-rx
 comes with [rx-rust's releases](https://github.com/CDEF-inc/rx-rust/releases).
 
@@ -53,15 +54,17 @@ On Windows, unzip `rx-clang-x86_64-windows.zip` and add
 clang -mcpu=rxv3 -O2 -c main.c
 clang++ -mcpu=rxv3 -O2 -fno-exceptions -fno-rtti -c app.cpp
 clang -mcpu=rxv3 -c start.s
-clang++ -mcpu=rxv3 -nostdlib -T board.ld start.o main.o app.o -o app.elf
+clang++ -mcpu=rxv3 -nostartfiles -nolibc -nostdlib++ -T board.ld start.o main.o app.o -o app.elf
 llvm-objcopy -O srec app.elf app.mot
 ```
 
 `--target=rx-none-elf` is the default and may be given as well. `.S` files
 go through the preprocessor first. The driver links with the `ld.lld` next
-to it; you give the start-up code and the linker script (`-T`), and
-`-nostdlib` while there is no C library (without it the driver asks for
-`crt0.o`, newlib and libgcc). [`test/`](test) is a small example: start-up
+to it and the archive's `libclang_rt.builtins.a`; you give the start-up
+code and the linker script (`-T`), and while there is no C library
+`-nostartfiles -nolibc` (without them the driver asks for `crt0.o` and
+newlib), with `clang++` also `-nostdlib++`. `-nostdlib` leaves out the
+builtins as well. [`test/`](test) is a small example: start-up
 code that clears `.bss` and runs the C++ constructors
 ([`test/start.s`](test/start.s)), a linker script
 ([`test/qemu.ld`](test/qemu.ld)), and C, C++ and assembly that call each
@@ -80,7 +83,7 @@ CPU and floating point, as in GNURX's `rx-elf-gcc`:
   `-m32bit-doubles`.
 - The FPU is used only where the result is the IEEE one. It flushes
   denormals to zero, so `float` (and, with the DFPU, `double`) arithmetic
-  becomes calls into libgcc (`__mulsf3`, ...) unless you allow that with
+  becomes calls into the builtins (`__mulsf3`, ...) unless you allow that with
   `-fdenormal-fp-math=preserve-sign` (GCC's `-fpu` does the same).
 - Types as in GCC: plain `char` is unsigned, `int`, `long` and pointers are 4
   bytes, `long long` and `double` 8 bytes with 4-byte alignment, `int32_t`
@@ -158,13 +161,22 @@ the note at all.
 
 ## C and C++ libraries
 
-The archive is freestanding: clang's headers, no C library, and no compiler
-run-time library for RX yet (no compiler-rt builtins). Code that needs no
-library links with `-nostdlib`: supply `memcpy` / `memset` if the compiler
-emits calls to them, and avoid what would be a libgcc call (`double`
-arithmetic without the DFPU, `float` without
-`-fdenormal-fp-math=preserve-sign`, 64-bit division and variable shifts);
-`llvm-nm -u` lists what an object needs.
+The archive is freestanding: clang's headers and compiler-rt's builtins
+(`libclang_rt.builtins.a`, what GCC has in libgcc), no C library. Code that
+needs no C library links with `-nostartfiles -nolibc` (and `-nostdlib++`
+with `clang++`): supply `memcpy` / `memset` if the compiler emits calls to
+them; `llvm-nm -u` lists what an object needs.
+
+The builtins ([`scripts/builtins.sh`](scripts/builtins.sh)) are compiler-rt's
+generic C sources compiled for RXv1 without the FPU (`-mcpu=rx100`), so
+they run on every RX CPU, and none of them depends on the calling
+convention (their `.note.rx.abi` says neither), so the same library links
+with `-mabi=ccrx` and `-mabi=gnu` objects. They give `float` and `double`
+arithmetic and conversions in software (where the FPU / DFPU is not used,
+see `-fdenormal-fp-math` above), 64-bit division, remainder and variable
+shifts, the complex multiplication and division, `__builtin_popcount` and
+the like. There are no `long double` (it is `double`), `__int128`, `__bf16`
+or atomic routines.
 
 With `-mabi=gnu` you can use GNURX's newlib, libgcc and libstdc++:
 
@@ -216,8 +228,9 @@ bash scripts/check-dist.sh build/dist/rx-clang-x86_64-linux.tar.xz rx-toolchain-
 
 - [`scripts/build.sh`](scripts/build.sh) configures llvm-project with only
   `clang;lld` and the RX target and builds what the archive holds
-  (`install-distribution-stripped`): about 3300 steps, 12 minutes on 28
-  cores. It needs CMake, Ninja, Python 3 and a C++ compiler, and uses ccache
+  (`install-distribution-stripped`, then the builtins with
+  [`scripts/builtins.sh`](scripts/builtins.sh)): about 3300 steps, 12
+  minutes on 28 cores. It needs CMake, Ninja, Python 3 and a C++ compiler, and uses ccache
   if it is installed. On Windows run `scripts\msvc.bat scripts/build.sh`
   (Visual Studio's C++ tools and Git for Windows).
 - [`scripts/dist.sh`](scripts/dist.sh) packs the archive with `VERSIONS`,
@@ -226,12 +239,13 @@ bash scripts/check-dist.sh build/dist/rx-clang-x86_64-linux.tar.xz rx-toolchain-
   and zlib.
 - [`scripts/check-dist.sh`](scripts/check-dist.sh) tests an archive with
   nothing but its own programs. It builds [`test/`](test) (C, C++ with
-  `-fno-exceptions -fno-rtti`, assembly) for every combination of the
+  `-fno-exceptions -fno-rtti`, assembly, and C that calls the builtins) for
+  every combination of the
   default convention, `-mabi=ccrx` and `-mabi=gnu`, three CPUs and `-O0` /
   `-O2`, runs the programs on qemu-system-rx (from an
   [rx-rust release](https://github.com/CDEF-inc/rx-rust/releases) archive,
-  the second argument, or `QEMU=`), and checks the ABI notes and ld.lld's
-  check of them, the C++ mangling and the SBOMs.
+  the second argument, or `QEMU=`), and checks the builtins, the ABI notes
+  and ld.lld's check of them, the C++ mangling and the SBOMs.
 - The CI ([`.github/workflows`](.github/workflows)): `ci.yml` builds on
   Ubuntu 22.04 (build/install cached by the llvm-project commit, ccache for
   rebuilds), packs the archive and runs check-dist.sh on Ubuntu 22.04 and

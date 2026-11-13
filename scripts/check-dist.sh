@@ -1,14 +1,15 @@
 #!/bin/bash
 # Tests a dist.sh archive with nothing else of this repository's builds:
-# unpacks it, and with only its programs compiles test/main.c and
-# test/other.c (C), test/cxx.cpp (C++, -fno-exceptions -fno-rtti),
-# assembles test/start.s and test/asm.s, links them with ld.lld (through
-# the clang driver) and runs them on qemu-system-rx. Every combination of
+# unpacks it, and with only its programs compiles test/main.c,
+# test/other.c and test/rt.c (C), test/cxx.cpp (C++, -fno-exceptions
+# -fno-rtti), assembles test/start.s and test/asm.s, links them with ld.lld
+# and the archive's libclang_rt.builtins.a (through the clang driver) and
+# runs them on qemu-system-rx. Every combination of
 #   calling convention  the default (CC-RX's), -mabi=ccrx, -mabi=gnu
 #   CPU                 the default (-mcpu=rx600, RXv1 with the FPU) on
 #                       QEMU's rx62n, -mcpu=rxv2 on rxv2, -mcpu=rxv3 on rxv3
 #   optimization        -O0, -O2
-# Then: the objects' .note.rx.abi, ld.lld refusing CC-RX and GNURX objects
+# Then: the builtins that rt.c calls, the objects' .note.rx.abi, ld.lld refusing CC-RX and GNURX objects
 # together (and only warning with -z rx-abi-check=warning), the Itanium
 # mangling of cxx.o, the resource headers, and the SBOMs.
 #
@@ -102,18 +103,21 @@ for abi in default ccrx gnu; do
     for opt in -O0 -O2; do
       o=$abi-$mcpu$opt
       mkdir -p "$o"
-      # No --target: the archive's clang defaults to rx-none-elf. There is
-      # no libgcc, so float arithmetic has to use the FPU, which clang does
-      # only when denormals may flush to zero.
-      cc="$B/clang -mcpu=$mcpu $aflag $opt -Wall -Werror -fdenormal-fp-math=preserve-sign"
-      if $cc -DWANT_ABI=$want -c "$S/main.c" -o "$o/main.o" &&
-         $cc -c "$S/other.c" -o "$o/other.o" &&
+      # No --target: the archive's clang defaults to rx-none-elf. main.c
+      # and other.c use the FPU for float arithmetic, which clang does only
+      # when denormals may flush to zero; rt.c calls libclang_rt.builtins.a
+      # for it instead.
+      cc="$B/clang -mcpu=$mcpu $aflag $opt -Wall -Werror"
+      if $cc -fdenormal-fp-math=preserve-sign -DWANT_ABI=$want -c "$S/main.c" -o "$o/main.o" &&
+         $cc -fdenormal-fp-math=preserve-sign -c "$S/other.c" -o "$o/other.o" &&
+         $cc -c "$S/rt.c" -o "$o/rt.o" &&
          "$B/clang++" -mcpu=$mcpu $aflag $opt -Wall -Werror -fno-exceptions -fno-rtti \
            -c "$S/cxx.cpp" -o "$o/cxx.o" &&
          "$B/clang" -mcpu=$mcpu $asflag -c "$S/asm.s" -o "$o/asm.o" &&
          "$B/clang" -mcpu=$mcpu -c "$S/start.s" -o "$o/start.o" &&
-         "$B/clang++" -mcpu=$mcpu -nostdlib -T "$S/qemu.ld" "$o/start.o" "$o/main.o" \
-           "$o/other.o" "$o/cxx.o" "$o/asm.o" -o "$o/test.elf" 2> "$o/build.log"; then
+         "$B/clang++" -mcpu=$mcpu -nostartfiles -nolibc -nostdlib++ -T "$S/qemu.ld" \
+           "$o/start.o" "$o/main.o" "$o/other.o" "$o/rt.o" "$o/cxx.o" "$o/asm.o" \
+           -o "$o/test.elf" 2> "$o/build.log"; then
         run "$o/test.elf" "$qcpu" "$abi -mcpu=$mcpu $opt"
       else
         fail "$abi -mcpu=$mcpu $opt: does not build"
@@ -123,17 +127,33 @@ for abi in default ccrx gnu; do
   done
 done
 
-# The calling-convention note and ld.lld's check of it.
+# The first .note.rx.abi word of an object, or of each member of an archive.
 note() {
-  "$B/llvm-readelf" -n "$1" | awk '/description data:/ {print $3; exit}'
+  "$B/llvm-readelf" -n "$1" | awk '/^File: .*\(/ {multi = 1} /description data:/ {print $3; if (!multi) exit}'
 }
+
+# libclang_rt.builtins.a: where the driver links it from, what rt.o calls in
+# it, and its objects' .note.rx.abi (neither convention, so both link it).
+rtlib=$("$B/clang" -print-libgcc-file-name | tr -d '\r')
+if command -v cygpath > /dev/null; then rtlib=$(cygpath -u "$rtlib"); fi
+[ -f "$rtlib" ] && ok "${rtlib#$T/}: $("$B/llvm-ar" t "$rtlib" | wc -l) objects" ||
+  fail "no libclang_rt.builtins.a at $rtlib"
+undef=$("$B/llvm-nm" -u default-rx600-O2/rt.o)
+for s in ___addsf3 ___mulsf3 ___divsf3 ___adddf3 ___divdf3 ___divdi3 ___udivdi3 ___umoddi3 ___lshrdi3 ___fixdfdi; do
+  echo "$undef" | grep -q " $s\$" && "$B/llvm-nm" default-rx600-O2/test.elf | grep -q " $s\$" &&
+    ok "rt.o calls $s, linked from the builtins" || fail "rt.o / test.elf: $s"
+done
+[ "$(note "$rtlib" | sort -u)" = 03 ] && ok "the builtins' .note.rx.abi: 03 (neither)" ||
+  fail "the builtins' .note.rx.abi: $(note "$rtlib" | sort -u | tr '\n' ' ')"
+
+# The calling-convention note and ld.lld's check of it.
 for x in "default-rx600-O2/main.o 01" "ccrx-rx600-O2/other.o 01" "gnu-rx600-O2/main.o 02" "gnu-rx600-O2/other.o 02"; do
   set -- $x
   [ "$(note "$1")" = "$2" ] && ok "$1: .note.rx.abi $2" || fail "$1: .note.rx.abi '$(note "$1")', want $2"
 done
 [ -f default-rx600-O2/asm.o ] && [ -z "$(note default-rx600-O2/asm.o)" ] && ok "asm.o: no .note.rx.abi" || fail "asm.o has a .note.rx.abi"
 m=default-rx600-O2 g=gnu-rx600-O2
-mixed="$m/start.o $m/main.o $g/other.o $m/cxx.o $m/asm.o"
+mixed="$m/start.o $m/main.o $g/other.o $m/rt.o $m/cxx.o $m/asm.o $rtlib"
 if out=$("$B/ld.lld" -T "$S/qemu.ld" $mixed -o mixed.elf 2>&1); then
   fail "ld.lld links CC-RX and GNURX objects together"
 else
@@ -141,9 +161,9 @@ else
     ok "ld.lld refuses CC-RX and GNURX objects: $(echo "$out" | head -1)" ||
     { fail "ld.lld fails, but not on the calling convention"; echo "$out"; }
 fi
-if out=$("$B/clang" -nostdlib -T "$S/qemu.ld" -Wl,-z,rx-abi-check=warning $mixed -o mixed.elf 2>&1) &&
+if out=$("$B/ld.lld" -T "$S/qemu.ld" -z rx-abi-check=warning $mixed -o mixed.elf 2>&1) &&
    echo "$out" | grep -q "warning: .*calling convention"; then
-  ok "-Wl,-z,rx-abi-check=warning links them with a warning"
+  ok "-z rx-abi-check=warning links them with a warning"
 else
   fail "-z rx-abi-check=warning"; echo "$out"
 fi

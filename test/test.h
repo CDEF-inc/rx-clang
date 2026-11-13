@@ -21,6 +21,7 @@ int c_sum6(struct s6 s, int x);
 int c_ptr_sum(const struct s12 *a, const struct s6 *b);
 
 void cxx_tests(void);                        /* cxx.cpp */
+void rt_tests(void);                         /* rt.c */
 
 #ifdef __cplusplus
 }
