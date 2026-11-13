@@ -10,6 +10,8 @@
 #             llvm-dwarfdump
 #   lib/clang/N/include   clang's resource headers (stddef.h, stdint.h,
 #             stdarg.h, ...)
+#   lib/clang/N/lib/rx-unknown-none-elf/libclang_rt.builtins.a
+#             compiler-rt's builtins (scripts/builtins.sh)
 #
 #   build.sh                     on Linux
 #   scripts\msvc.bat scripts/build.sh   on Windows, in Git Bash with the
@@ -99,5 +101,6 @@ cmake "${flags[@]}" > "$out/cmake.log" 2>&1 || { tail -30 "$out/cmake.log"; exit
 rm -rf "$inst"
 ninja -C "$out" $jobs install-distribution-stripped > "$out/ninja.log" 2>&1 ||
   { grep -E -B2 -A8 'error|FAILED' "$out/ninja.log" | head -80; exit 1; }
+bash "$root/scripts/builtins.sh"
 "$inst/bin/clang" --version
 "$inst/bin/llc" --version | grep -iE 'llvm version|default target| rx '

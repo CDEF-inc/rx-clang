@@ -15,6 +15,7 @@ on:
       - scripts/build.sh
       - scripts/dist.sh
       - scripts/msvc.bat
+      - scripts/builtins.sh
       - scripts/check-dist.sh
       - test/**
       - .github/rx-rust-release
@@ -42,7 +43,7 @@ jobs:
       - id: key
         shell: bash
         run: |
-          echo "install=install-windows-v$CACHE_VERSION-$(git rev-parse HEAD:llvm-project)-${{ hashFiles('scripts/build.sh') }}" |
+          echo "install=install-windows-v$CACHE_VERSION-$(git rev-parse HEAD:llvm-project)-${{ hashFiles('scripts/build.sh', 'scripts/builtins.sh') }}" |
             tee -a "$GITHUB_OUTPUT"
       - id: install
         uses: actions/cache/restore@v6

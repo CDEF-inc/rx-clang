@@ -112,5 +112,7 @@ int main(void) {
   check(13, v5 / v3 * 100 + v5 % v3, 102);
   /* C++. */
   cxx_tests();
+  /* Through libclang_rt.builtins.a. */
+  rt_tests();
   return 0;
 }
