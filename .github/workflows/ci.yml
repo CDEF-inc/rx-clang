@@ -1,5 +1,6 @@
-# Builds the toolchain (scripts/build.sh) and packs the Linux archive
-# (scripts/dist.sh, the rx-clang-x86_64-linux artifact).
+# Builds the toolchain (scripts/build.sh), packs the Linux archive
+# (scripts/dist.sh, the rx-clang-x86_64-linux artifact) and tests it on
+# Ubuntu 22.04 and Debian 12 (scripts/check-dist.sh).
 #
 # build/install is cached under a key made of the llvm-project commit and
 # the build script, so a change to anything else (the scripts that pack or
@@ -103,3 +104,50 @@ jobs:
           name: build-logs-linux
           path: build/llvm/*.log
           if-no-files-found: ignore
+
+  # The archive on other distributions, with nothing installed but what
+  # unpacking needs (no compiler): scripts/check-dist.sh builds test/ with
+  # the archive's programs and runs it on the qemu-system-rx of the rx-rust
+  # release in .github/rx-rust-release.
+  linux-check:
+    needs: linux
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:22.04", "debian:12"]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    container: ${{ matrix.image }}
+    steps:
+      # The container gets the runner's DNS servers, which stopped resolving
+      # the Ubuntu archive hosts for hours on 2026-11-11 (rx-rust's ci.yml).
+      # If the install fails or hangs, use public DNS servers and try again.
+      - run: |
+          apt_install() {
+            timeout -k 30 300 apt-get update -qq &&
+              timeout -k 30 600 apt-get install -y -qq -o Acquire::Retries=3 \
+                --no-install-recommends ca-certificates curl xz-utils zstd > /dev/null
+          }
+          apt_install || {
+            echo "apt-get install failed or timed out: retrying with public DNS" >&2
+            printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
+            apt_install
+          }
+      - uses: actions/checkout@v7
+      - id: rel
+        run: echo "tag=$(grep -v '^#' .github/rx-rust-release)" | tee -a "$GITHUB_OUTPUT"
+      - id: qemu
+        uses: actions/cache@v6
+        with:
+          path: rx-rust/rx-toolchain-x86_64-linux.tar.xz
+          key: rx-rust-${{ steps.rel.outputs.tag }}-linux
+      - if: steps.qemu.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p rx-rust
+          curl -fsSL --retry 3 -o rx-rust/rx-toolchain-x86_64-linux.tar.xz \
+            "https://github.com/CDEF-inc/rx-rust/releases/download/${{ steps.rel.outputs.tag }}/rx-toolchain-x86_64-linux.tar.xz"
+      - uses: actions/download-artifact@v8
+        with:
+          name: rx-clang-x86_64-linux
+          path: dist
+      - run: bash scripts/check-dist.sh dist/rx-clang-x86_64-linux.tar.xz rx-rust/rx-toolchain-x86_64-linux.tar.xz

@@ -1,5 +1,6 @@
-# Builds the Windows toolchain (scripts/build.sh with MSVC) and packs the
-# zip (scripts/dist.sh, the rx-clang-x86_64-windows artifact).
+# Builds the Windows toolchain (scripts/build.sh with MSVC), packs the zip
+# (scripts/dist.sh, the rx-clang-x86_64-windows artifact) and tests it
+# (scripts/check-dist.sh).
 #
 # build/install is cached like ci.yml's. There is no ccache here, so a new
 # llvm-project commit rebuilds clang and lld in full (a few hours on a
@@ -14,6 +15,9 @@ on:
       - scripts/build.sh
       - scripts/dist.sh
       - scripts/msvc.bat
+      - scripts/check-dist.sh
+      - test/**
+      - .github/rx-rust-release
   push:
     branches: [main]
   workflow_dispatch:
@@ -73,3 +77,21 @@ jobs:
           name: build-logs-windows
           path: build/llvm/*.log
           if-no-files-found: ignore
+      # The zip with the qemu-system-rx of the rx-rust release in
+      # .github/rx-rust-release (scripts/check-dist.sh).
+      - id: rel
+        shell: bash
+        run: echo "tag=$(grep -v '^#' .github/rx-rust-release)" | tee -a "$GITHUB_OUTPUT"
+      - id: qemu
+        uses: actions/cache@v6
+        with:
+          path: rx-rust/rx-toolchain-x86_64-windows.zip
+          key: rx-rust-${{ steps.rel.outputs.tag }}-windows
+      - if: steps.qemu.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          mkdir -p rx-rust
+          curl -fsSL --retry 3 -o rx-rust/rx-toolchain-x86_64-windows.zip \
+            "https://github.com/CDEF-inc/rx-rust/releases/download/${{ steps.rel.outputs.tag }}/rx-toolchain-x86_64-windows.zip"
+      - shell: bash
+        run: bash scripts/check-dist.sh build/dist/rx-clang-x86_64-windows.zip rx-rust/rx-toolchain-x86_64-windows.zip
