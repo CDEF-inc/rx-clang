@@ -36,15 +36,16 @@ case "$lib" in "$install"/*) ;; *) echo "unexpected runtime path $lib" >&2; exit
 # The flags of compiler-rt's CMake (lib/builtins/CMakeLists.txt) for a
 # standalone bare-metal build, for RXv1 without the FPU: float arithmetic in
 # the sources (powisf2.c, mulsc3.c, ...) calls these functions themselves.
-cflags="-mcpu=rx100 -O2 -std=c11 -ffreestanding -fno-builtin \
-  -fomit-frame-pointer -nostdinc++ \
-  -Wno-c2y-extensions -fdebug-prefix-map=$root/llvm-project=llvm-project"
+cflags=(-mcpu=rx100 -O2 -std=c11 -ffreestanding -fno-builtin
+  -fomit-frame-pointer -nostdinc++ -Wno-c2y-extensions
+  "-fdebug-prefix-map=$root/llvm-project=llvm-project")
 
 rm -rf "$obj"
 mkdir -p "$obj"
-export cc cflags src obj
-echo "$sources" | tr ' ' '\n' | grep . |
-  xargs -P "$jobs" -I{} sh -c '$cc $cflags -c "$src/{}" -o "$obj/$(basename {} .c).o"'
+# One clang per source, in $obj, where each writes its .o (no -o). Paths
+# go through xargs one per line, so they may contain spaces.
+(cd "$obj" && for f in $sources; do echo "$src/$f"; done |
+  xargs -d '\n' -n 1 -P "$jobs" "$cc" "${cflags[@]}" -c)
 
 # Every object must carry the "neither" note (3): one that depends on a
 # convention would make the library unusable from the other.
