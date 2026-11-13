@@ -1,0 +1,75 @@
+# Builds the Windows toolchain (scripts/build.sh with MSVC) and packs the
+# zip (scripts/dist.sh, the rx-clang-x86_64-windows artifact).
+#
+# build/install is cached like ci.yml's. There is no ccache here, so a new
+# llvm-project commit rebuilds clang and lld in full (a few hours on a
+# GitHub runner): this runs on main and by hand, and on a pull request only
+# when it changes the Windows build itself.
+name: Windows
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/windows.yml
+      - scripts/build.sh
+      - scripts/dist.sh
+      - scripts/msvc.bat
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Bump to rebuild build/install.
+  CACHE_VERSION: 1
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 350
+    steps:
+      - run: |
+          git config --global core.autocrlf false
+          git config --global core.longpaths true
+      - uses: actions/checkout@v7
+      - id: key
+        shell: bash
+        run: |
+          echo "install=install-windows-v$CACHE_VERSION-$(git rev-parse HEAD:llvm-project)-${{ hashFiles('scripts/build.sh') }}" |
+            tee -a "$GITHUB_OUTPUT"
+      - id: install
+        uses: actions/cache/restore@v6
+        with: { path: build/ci/install.tar, key: "${{ steps.key.outputs.install }}" }
+      - shell: bash
+        run: git submodule update --init --depth 1 llvm-project
+      - if: steps.install.outputs.cache-hit != 'true'
+        shell: cmd
+        run: call scripts\msvc.bat scripts/build.sh
+      - if: steps.install.outputs.cache-hit != 'true'
+        shell: bash
+        run: mkdir -p build/ci && tar -C build -cf build/ci/install.tar install
+      - if: steps.install.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with: { path: build/ci/install.tar, key: "${{ steps.key.outputs.install }}" }
+      - if: steps.install.outputs.cache-hit == 'true'
+        shell: bash
+        run: tar -C build -xf build/ci/install.tar
+      - shell: bash
+        run: bash scripts/dist.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rx-clang-x86_64-windows
+          path: |
+            build/dist/rx-clang-x86_64-windows.zip
+            build/dist/rx-clang-x86_64-windows.spdx.json
+            build/dist/rx-clang-x86_64-windows.cdx.json
+          compression-level: 0
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-logs-windows
+          path: build/llvm/*.log
+          if-no-files-found: ignore
