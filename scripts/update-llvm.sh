@@ -22,16 +22,27 @@ command -v gh > /dev/null || { echo "needs gh (GitHub CLI)" >&2; exit 2; }
 
 rust=$(gh api "repos/CDEF-inc/rx-rust/contents/rust?ref=$ref" --jq .sha)
 want=$(gh api "repos/CDEF-inc/rust/contents/src/llvm-project?ref=$rust" --jq .sha)
-have=$(git -C "$root" rev-parse HEAD:llvm-project)
+# The index's commit, not HEAD's: after an earlier run that was not
+# committed, they differ, and the index is what the next commit records.
+have=$(git -C "$root" rev-parse :llvm-project)
+committed=$(git -C "$root" rev-parse HEAD:llvm-project)
 echo "rx-rust $ref: rust $rust, llvm-project $want"
-echo "rx-clang:     llvm-project $have"
+echo "rx-clang:     llvm-project $have (staged)${committed:+, $committed (HEAD)}"
 if [ "$want" = "$have" ]; then
+  [ -n "$check" ] || [ ! -e "$root/llvm-project/.git" ] ||
+    [ "$(git -C "$root/llvm-project" rev-parse HEAD)" = "$want" ] ||
+    git -C "$root/llvm-project" checkout -q "$want"
   echo "up to date"
   exit 0
 fi
 [ -n "$check" ] && { echo "differs: run scripts/update-llvm.sh $ref"; exit 1; }
 
 git -C "$root" update-index --cacheinfo "160000,$want,llvm-project"
+if [ "$want" = "$committed" ]; then
+  echo "back to HEAD's llvm-project $want; nothing to commit"
+  git -C "$root/llvm-project" checkout -q "$want" 2> /dev/null || true
+  exit 0
+fi
 if [ -e "$root/llvm-project/.git" ]; then
   git -C "$root/llvm-project" fetch -q --depth 1 origin "$want"
   git -C "$root/llvm-project" checkout -q "$want"
