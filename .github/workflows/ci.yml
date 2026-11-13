@@ -1,0 +1,105 @@
+# Builds the toolchain (scripts/build.sh) and packs the Linux archive
+# (scripts/dist.sh, the rx-clang-x86_64-linux artifact).
+#
+# build/install is cached under a key made of the llvm-project commit and
+# the build script, so a change to anything else (the scripts that pack or
+# test, the README) goes straight to packing. A new llvm-project commit
+# rebuilds it; ccache keeps the objects of the last build, so only what the
+# new commit changed is compiled again.
+#
+# Everything runs on ubuntu-22.04 (glibc 2.35), as rx-rust's CI does, so
+# the archive runs on Ubuntu 22.04, Debian 12 and later.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Bump to rebuild build/install (e.g. after changing what dist.sh expects).
+  CACHE_VERSION: 1
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: 2G
+
+jobs:
+  # Whether llvm-project is still rx-rust main's (a notice, not a failure:
+  # a bump is a pull request of its own, scripts/update-llvm.sh).
+  llvm-pin:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash scripts/update-llvm.sh --check main ||
+            echo "::warning::llvm-project is not rx-rust main's LLVM: scripts/update-llvm.sh"
+
+  linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v7
+      - id: key
+        run: |
+          echo "install=install-linux-v$CACHE_VERSION-$(git rev-parse HEAD:llvm-project)-${{ hashFiles('scripts/build.sh') }}" |
+            tee -a "$GITHUB_OUTPUT"
+      - id: install
+        uses: actions/cache/restore@v6
+        with: { path: build/ci/install.tar.zst, key: "${{ steps.key.outputs.install }}" }
+      # dist.sh needs the checkout too (LICENSE.TXT, the commit).
+      - run: git submodule update --init --depth 1 llvm-project
+      - if: steps.install.outputs.cache-hit != 'true'
+        name: Install build tools
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends cmake ninja-build ccache python3 g++ zstd > /dev/null
+      - if: steps.install.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v6
+        with:
+          path: .ccache
+          key: ccache-linux-${{ github.run_id }}
+          restore-keys: ccache-linux-
+      - if: steps.install.outputs.cache-hit != 'true'
+        run: |
+          bash scripts/build.sh
+          ccache -s
+          mkdir -p build/ci
+          tar -C build -cf - install | zstd -q -T0 -9 -o build/ci/install.tar.zst
+      - if: steps.install.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with: { path: build/ci/install.tar.zst, key: "${{ steps.key.outputs.install }}" }
+      - if: always() && steps.install.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: .ccache
+          key: ccache-linux-${{ github.run_id }}
+      - if: steps.install.outputs.cache-hit == 'true'
+        run: zstd -q -d -c build/ci/install.tar.zst | tar -C build -xf -
+      - run: bash scripts/dist.sh
+      # The archive must not need a newer glibc than the runner's.
+      - run: |
+          tar -xJOf build/dist/rx-clang-x86_64-linux.tar.xz rx-clang-x86_64-linux/VERSIONS |
+            grep -x 'needs glibc    2\.3[0-5] or later'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rx-clang-x86_64-linux
+          path: |
+            build/dist/rx-clang-x86_64-linux.tar.xz
+            build/dist/rx-clang-x86_64-linux.spdx.json
+            build/dist/rx-clang-x86_64-linux.cdx.json
+          compression-level: 0
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-logs-linux
+          path: build/llvm/*.log
+          if-no-files-found: ignore
