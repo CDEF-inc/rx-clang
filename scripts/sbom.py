@@ -124,9 +124,8 @@ def main():
         rels.append({"spdxElementId": top, "relationshipType": rel,
                      "relatedSpdxElement": p["SPDXID"]})
 
-    # The repository's own scripts have no license file yet: NOASSERTION.
     add(package("rx-clang", spdx_id("Package", "rx-clang"), a.rx_clang, ORG,
-                f"git+{GH}/rx-clang.git@{a.rx_clang}", "NOASSERTION",
+                f"git+{GH}/rx-clang.git@{a.rx_clang}", "MIT OR Apache-2.0",
                 purl=f"pkg:github/CDEF-inc/rx-clang@{a.rx_clang}",
                 comment="The scripts that build and pack the toolchain."),
         rel="GENERATED_FROM")

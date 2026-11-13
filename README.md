@@ -259,10 +259,19 @@ point [`.github/rx-rust-release`](.github/rx-rust-release) at it.
 
 ## License
 
-The toolchain in the archives is LLVM, under the Apache License 2.0 with
-LLVM Exceptions (`Apache-2.0 WITH LLVM-exception`; `LICENSE.TXT` in the
-archive, `llvm/LICENSE.TXT` in
-[CDEF-inc/llvm-project](https://github.com/CDEF-inc/llvm-project)). The
-scripts and tests of this repository have no license file yet.
+The scripts and tests of this repository are licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
+
+at your option, as rx-rust is. The toolchain in the archives is LLVM, under
+the Apache License 2.0 with LLVM Exceptions (`Apache-2.0 WITH
+LLVM-exception`; `LICENSE.TXT` in the archive, `llvm/LICENSE.TXT` in
+[CDEF-inc/llvm-project](https://github.com/CDEF-inc/llvm-project)).
+
+Unless you explicitly state otherwise, any contribution intentionally
+submitted for inclusion in the work by you, as defined in the Apache-2.0
+license, shall be dual licensed as above, without any additional terms or
+conditions.
 
 Security issues: see [SECURITY.md](SECURITY.md).
