@@ -1,0 +1,3 @@
+# The CDEF-inc/rx-rust release whose qemu-system-rx the CI runs the check
+# on (scripts/check-dist.sh). Only QEMU is taken from it.
+toolchain-2026-11-13.1
