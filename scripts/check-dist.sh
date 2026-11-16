@@ -9,22 +9,23 @@
 #   CPU                 the default (-mcpu=rx600, RXv1 with the FPU) on
 #                       QEMU's rx62n, -mcpu=rxv2 on rxv2, -mcpu=rxv3 on rxv3
 #   optimization        -O0, -O2
-# Then: the builtins that rt.c calls, the objects' .note.rx.abi, ld.lld refusing CC-RX and GNURX objects
-# together (and only warning with -z rx-abi-check=warning), the Itanium
-# mangling of cxx.o, the resource headers, and the SBOMs.
+# Then: a debugging session with the archive's lldb on its qemu-system-rx
+# (breakpoints in C and C++, backtraces, arguments, `finish`), the builtins
+# that rt.c calls, the objects' .note.rx.abi, ld.lld refusing CC-RX and
+# GNURX objects together (and only warning with -z rx-abi-check=warning),
+# the Itanium mangling of cxx.o, the resource headers, and the SBOMs.
 #
-#   check-dist.sh ARCHIVE.tar.xz|ARCHIVE.zip [RX_RUST_ARCHIVE]
+#   check-dist.sh ARCHIVE.tar.xz|ARCHIVE.zip
 #
-# qemu-system-rx is QEMU, else the one in RX_RUST_ARCHIVE: a release
-# archive of CDEF-inc/rx-rust (rx-toolchain-x86_64-linux.tar.xz, or
-# rx-toolchain-x86_64-windows.zip in Git Bash), of which only QEMU and its
-# libraries are unpacked. RUN_SECONDS is how long each program runs
-# (default 2).
+# The programs run on the archive's qemu-system-rx, or on QEMU if it is set.
+# RUN_SECONDS is how long each program runs (default 2); LLDB_TIMEOUT
+# bounds the LLDB session (seconds, default 120).
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
-[ $# = 1 ] || [ $# = 2 ] || { echo "usage: $0 ARCHIVE.tar.xz|ARCHIVE.zip [RX_RUST_ARCHIVE]" >&2; exit 2; }
+[ $# = 1 ] || { echo "usage: $0 ARCHIVE.tar.xz|ARCHIVE.zip" >&2; exit 2; }
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+qemu_pid=
+trap '[ -z "$qemu_pid" ] || kill "$qemu_pid" 2> /dev/null; rm -rf "$tmp"' EXIT
 # QEMU on Windows takes Windows paths, also in file: (rx-rust's run-rust-rom.sh).
 w() { if command -v cygpath > /dev/null; then cygpath -m "$1"; else echo "$1"; fi; }
 
@@ -43,15 +44,7 @@ T=$(ls -d "$tmp"/dist/*/ | head -1)
 T=${T%/}
 B=$T/bin
 cat "$T/VERSIONS"
-if [ -z "${QEMU:-}" ]; then
-  [ $# = 2 ] || { echo "no qemu-system-rx: set QEMU or give an rx-rust archive" >&2; exit 2; }
-  case $2 in
-  *.zip) unpack "$2" "$tmp/rx-rust" '*/bin/qemu-system-rx.exe' '*/bin/*.dll' ;;
-  *) unpack "$2" "$tmp/rx-rust" '*/bin/qemu-system-rx' '*/lib/lib*.so*' \
-       --exclude='*/lib/librustc_driver*' --exclude='*/lib/liblldb*' ;;
-  esac
-  QEMU=$(ls "$tmp"/rx-rust/*/bin/qemu-system-rx* | head -1)
-fi
+QEMU=${QEMU:-$(ls "$B"/qemu-system-rx* | head -1)}
 "$QEMU" --version | head -1
 
 status=0
@@ -126,6 +119,74 @@ for abi in default ccrx gnu; do
     done
   done
 done
+
+# LLDB: the program (default convention and CPU, -O0 -g) on qemu-system-rx's
+# gdbstub, stopped before its first instruction (-S). Breakpoints in C
+# (c_sum6, whose struct argument is on the stack and x in R1) and in C++
+# (overload(int), by its unmangled name), backtraces into main and
+# cxx_tests, an argument, and `finish` with the return value.
+LLDB=$B/lldb
+[ -f "$LLDB" ] || LLDB=$B/lldb.exe
+if [ ! -f "$LLDB" ]; then
+  fail "no lldb in the archive"
+else
+  o=lldb
+  mkdir -p "$o"
+  cc="$B/clang -g -O0 -Wall -Werror"
+  if $cc -fdenormal-fp-math=preserve-sign -DWANT_ABI=1 -c "$S/main.c" -o "$o/main.o" &&
+     $cc -fdenormal-fp-math=preserve-sign -c "$S/other.c" -o "$o/other.o" &&
+     $cc -c "$S/rt.c" -o "$o/rt.o" &&
+     "$B/clang++" -g -O0 -Wall -Werror -fno-exceptions -fno-rtti -c "$S/cxx.cpp" -o "$o/cxx.o" &&
+     "$B/clang" -c "$S/asm.s" -o "$o/asm.o" && "$B/clang" -c "$S/start.s" -o "$o/start.o" &&
+     "$B/clang++" -nostartfiles -nolibc -nostdlib++ -T "$S/qemu.ld" "$o/start.o" "$o/main.o" \
+       "$o/other.o" "$o/rt.o" "$o/cxx.o" "$o/asm.o" -o "$o/test.elf" 2> "$o/build.log"; then
+    port=$((20000 + $$ % 20000))
+    head -c 16 /dev/zero > "$tmp/bios.bin"
+    "$QEMU" -M gdbsim-r5f562n8 -bios "$(w "$tmp/bios.bin")" -display none -serial none \
+      -monitor none -device loader,file="$(w "$tmp/$o/test.elf")",cpu-num=0 -S \
+      -gdb tcp:127.0.0.1:$port > "$o/qemu.log" 2>&1 &
+    qemu_pid=$!
+    # Until the gdbstub listens (a connection that closes leaves it stopped).
+    for _ in $(seq 50); do
+      (exec 3<> "/dev/tcp/127.0.0.1/$port") 2> /dev/null && break
+      sleep 0.2
+    done
+    cmds=(
+      "breakpoint set -n c_sum6" "continue" "bt" "frame variable x" "finish"
+      "breakpoint delete -f 1" "breakpoint set -n overload" "continue" "bt" "frame variable" "finish"
+      "kill"
+    )
+    args=()
+    for c in "${cmds[@]}"; do args+=(-o "$c"); done
+    lldb_status=0
+    timeout -k 10 "${LLDB_TIMEOUT:-120}" "$LLDB" -b -x -o "settings set use-color false" \
+      -o "target create $(w "$tmp/$o/test.elf")" -o "gdb-remote 127.0.0.1:$port" \
+      "${args[@]}" 2>&1 | tr -d '\r' > "$o/lldb.log" || lldb_status=$?
+    kill "$qemu_pid" 2> /dev/null || true
+    wait "$qemu_pid" 2> /dev/null || true
+    qemu_pid=
+    lstatus=$status
+    expect() {
+      grep -q -E -- "$2" "$o/lldb.log" && ok "lldb: $1" || fail "lldb: $1: no /$2/"
+    }
+    [ $lldb_status = 124 ] || [ $lldb_status = 137 ] &&
+      fail "lldb: did not finish in ${LLDB_TIMEOUT:-120} s"
+    expect "stops in C"           "frame #0: 0x[0-9a-f]+ test\\.elf\`c_sum6\\(s=.*, x=4\\) at other\\.c:[0-9]+"
+    expect "C backtrace"          "frame #1: 0x[0-9a-f]+ test\\.elf\`main at main\\.c:101"
+    expect "C argument"           '^\(int\) x = 4$'
+    expect "finish in C"          'Return value: \(int\) \$[0-9]+ = 25$'
+    expect "stops in C++"         "frame #0: 0x[0-9a-f]+ test\\.elf\`overload\\(x=1\\) at cxx\\.cpp:63"
+    expect "C++ backtrace"        "frame #1: 0x[0-9a-f]+ test\\.elf\`(::)?cxx_tests\\(\\) at cxx\\.cpp:96"
+    expect "finish in C++"        'Return value: \(int\) \$[0-9]+ = 2$'
+    grep -q -E 'Assertion|Stack dump|PLEASE submit' "$o/lldb.log" && fail "lldb crashed"
+    if [ $status != $lstatus ]; then
+      echo "   (the LLDB session:)"; cat "$o/lldb.log"
+    fi
+  else
+    fail "lldb: the -g program does not build"
+    cat "$o/build.log" 2> /dev/null || true
+  fi
+fi
 
 # The first .note.rx.abi word of an object, or of each member of an archive.
 note() {

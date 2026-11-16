@@ -2,10 +2,10 @@
 
 A C, C++ and assembler toolchain for Renesas RX microcontrollers: clang,
 llvm-mc and lld, built from the RX backend in
-[CDEF-inc/llvm-project](https://github.com/CDEF-inc/llvm-project). It uses the
-same LLVM as the Rust toolchain in
-[CDEF-inc/rx-rust](https://github.com/CDEF-inc/rx-rust), so C, C++, assembly
-and Rust objects link together.
+[CDEF-inc/llvm-project](https://github.com/CDEF-inc/llvm-project), with the
+LLDB debugger and the qemu-system-rx emulator. It uses the same LLVM as the
+Rust toolchain in [CDEF-inc/rx-rust](https://github.com/CDEF-inc/rx-rust), so
+C, C++, assembly and Rust objects link together.
 
 Status: experimental. The archives are on the
 [releases page](https://github.com/CDEF-inc/rx-clang/releases), each with its
@@ -29,13 +29,17 @@ Visual C++ redistributable) hold `rx-clang-x86_64-linux/` or
 | `bin/llvm-ar` (`llvm-ranlib`), `llvm-objcopy` (`llvm-strip`), `llvm-objdump`, `llvm-nm`, `llvm-size`, `llvm-readobj` (`llvm-readelf`), `llvm-strings`, `llvm-symbolizer` (`llvm-addr2line`), `llvm-cxxfilt`, `llvm-dwarfdump` | the binary tools |
 | `lib/clang/N/include` | clang's resource headers: `stddef.h`, `stdint.h`, `stdarg.h`, `stdbool.h`, `limits.h`, `float.h`, ... |
 | `lib/clang/N/lib/rx-unknown-none-elf/libclang_rt.builtins.a` | compiler-rt's builtins: soft-float `float` / `double` arithmetic, 64-bit division and shifts, ... (the driver links it) |
-| `VERSIONS` | the commits it was built from (rx-clang, llvm-project) and the glibc it needs |
+| `bin/lldb` | the debugger, with RX support (see [Debugging](#debugging)); on Linux with `lib/liblldb.so*`, on Windows `bin/liblldb.dll` |
+| `bin/qemu-system-rx` | QEMU with RXv1, RXv2, RXv3 and RXv3e ([CDEF-inc/qemu](https://github.com/CDEF-inc/qemu)); on Linux with the libraries it needs in `lib/` (glib, pixman, ...), on Windows its DLLs in `bin/` |
+| `VERSIONS` | the commits it was built from (rx-clang, llvm-project, qemu, and the rx-rust release that LLDB and QEMU come from) and the glibc it needs |
 | `LICENSE.TXT` | llvm-project's license |
+| `COPYING.QEMU` | QEMU's license (GPL-2.0) |
 | `SBOM.spdx.json`, `SBOM.cdx.json` | the software bill of materials (SPDX 2.3, CycloneDX 1.6) |
 
 There is no C library or C++ library in it (see
-[C and C++ libraries](#c-and-c-libraries)), and no emulator: qemu-system-rx
-comes with [rx-rust's releases](https://github.com/CDEF-inc/rx-rust/releases).
+[C and C++ libraries](#c-and-c-libraries)). LLDB and qemu-system-rx are the
+ones in the [rx-rust release](https://github.com/CDEF-inc/rx-rust/releases)
+of the same LLVM, unchanged.
 
 ## Install
 
@@ -101,6 +105,32 @@ Not supported (the backend does not have them): `-mbig-endian-data`, `-mpid`,
 `-mno-allow-string-insns`, `-msmall-data-limit`, `-mint-register`,
 `-mgcc-abi`, and `__attribute__((interrupt))` / `fast_interrupt` (write
 interrupt entries in assembly).
+
+## Debugging
+
+Build with `-g` and debug with the archive's `lldb` over the GDB remote
+protocol: on QEMU's gdbstub, or on a board through a GDB server (Renesas e2
+studio's `e2-server-gdb` with an E2 / E2 Lite emulator).
+
+```bash
+clang -g -O0 -c main.c && clang -g -O0 -c start.s
+clang -nostartfiles -nolibc -T board.ld start.o main.o -o app.elf
+# QEMU: the program in the SDRAM of gdbsim-r5f562n8, stopped (-S) until LLDB continues it
+qemu-system-rx -M gdbsim-r5f562n8 -cpu rxv3 -bios empty.bin -display none \
+  -device loader,file=app.elf,cpu-num=0 -S -gdb tcp:127.0.0.1:1234 &
+lldb app.elf -o "gdb-remote 127.0.0.1:1234"
+(lldb) breakpoint set -n main
+(lldb) continue
+```
+
+`-bios` takes any file (16 zero bytes, say): the program is loaded into RAM
+by `-device loader` and runs from its entry point. `-cpu` is `rx62n` (RXv1,
+the default), `rxv2`, `rxv3` or `rxv3e`. LLDB reads the RX registers
+(including the FPU's and, on RXv3, the DFPU's), sets breakpoints and
+watchpoints, steps, shows C and C++ arguments and locals from the DWARF, and
+`finish` reads return values (either calling convention). Code without
+debug info (assembly, `-g0`) is unwound by emulating its prologue.
+`scripts/check-dist.sh` runs such a session on every archive.
 
 ## Calling conventions: `-mabi=ccrx` and `-mabi=gnu`
 
@@ -226,8 +256,10 @@ SingleSource passes 387 of 411 tests on QEMU this way (rx-rust's
 git clone https://github.com/CDEF-inc/rx-clang.git && cd rx-clang
 git submodule update --init --depth 1 llvm-project
 bash scripts/build.sh          # build/install
-bash scripts/dist.sh           # build/dist/rx-clang-x86_64-linux.tar.xz
-bash scripts/check-dist.sh build/dist/rx-clang-x86_64-linux.tar.xz rx-toolchain-x86_64-linux.tar.xz
+# LLDB and qemu-system-rx: from the rx-rust release of the same LLVM
+curl -fLO https://github.com/CDEF-inc/rx-rust/releases/download/$(grep -v '^#' .github/rx-rust-release)/rx-toolchain-x86_64-linux.tar.xz
+bash scripts/dist.sh rx-toolchain-x86_64-linux.tar.xz    # build/dist/rx-clang-x86_64-linux.tar.xz
+bash scripts/check-dist.sh build/dist/rx-clang-x86_64-linux.tar.xz
 ```
 
 - [`scripts/build.sh`](scripts/build.sh) configures llvm-project with only
@@ -238,24 +270,29 @@ bash scripts/check-dist.sh build/dist/rx-clang-x86_64-linux.tar.xz rx-toolchain-
   if it is installed. On Windows run `scripts\msvc.bat scripts/build.sh`
   (Visual Studio's C++ tools and Git for Windows).
 - [`scripts/dist.sh`](scripts/dist.sh) packs the archive with `VERSIONS`,
-  the license and the SBOMs ([`scripts/sbom.py`](scripts/sbom.py)), and
-  refuses programs that need libraries beyond glibc, libstdc++, libgcc_s
-  and zlib.
+  the licenses and the SBOMs ([`scripts/sbom.py`](scripts/sbom.py)). It
+  takes LLDB, qemu-system-rx and their libraries from the rx-rust release
+  archive given to it (for the same host), refuses one whose LLDB is built
+  from another llvm-project commit, copies that archive's SBOM entries for
+  them (QEMU, libxml2 in LLDB, QEMU's libraries), and fetches QEMU's
+  `COPYING` at the commit it was built from. It refuses programs that need
+  libraries beyond glibc, libstdc++, libgcc_s, zlib and what the archive
+  brings.
 - [`scripts/check-dist.sh`](scripts/check-dist.sh) tests an archive with
   nothing but its own programs. It builds [`test/`](test) (C, C++ with
   `-fno-exceptions -fno-rtti`, assembly, and C that calls the builtins) for
   every combination of the
   default convention, `-mabi=ccrx` and `-mabi=gnu`, three CPUs and `-O0` /
-  `-O2`, runs the programs on qemu-system-rx (from an
-  [rx-rust release](https://github.com/CDEF-inc/rx-rust/releases) archive,
-  the second argument, or `QEMU=`), and checks the builtins, the ABI notes
+  `-O2`, runs the programs on the archive's qemu-system-rx (or `QEMU=`),
+  debugs one with the archive's lldb (breakpoints in C and C++,
+  backtraces, arguments, `finish`), and checks the builtins, the ABI notes
   and ld.lld's check of them, the C++ mangling and the SBOMs.
 - The CI ([`.github/workflows`](.github/workflows)): `ci.yml` builds on
   Ubuntu 22.04 (build/install cached by the llvm-project commit, ccache for
   rebuilds), packs the archive and runs check-dist.sh on Ubuntu 22.04 and
   Debian 12; `windows.yml` builds, packs and checks the zip (on `main`, by
   hand, and on pull requests that change the Windows build). The rx-rust
-  release that the checks take QEMU from is in
+  release that LLDB and QEMU are taken from is in
   [`.github/rx-rust-release`](.github/rx-rust-release).
 
 ### Following rx-rust's LLVM
@@ -272,8 +309,10 @@ git commit -m "Bump llvm-project to rx-rust main"
 [`scripts/update-llvm.sh`](scripts/update-llvm.sh) reads both commits
 through the GitHub API (`gh`), so it needs no rust checkout;
 `update-llvm.sh --check` only compares. The CI's `llvm-pin` job warns when
-the submodule is not rx-rust main's LLVM. When rx-rust makes a release, also
-point [`.github/rx-rust-release`](.github/rx-rust-release) at it.
+the submodule is not rx-rust main's LLVM. Point
+[`.github/rx-rust-release`](.github/rx-rust-release) at the rx-rust release
+of that LLVM in the same pull request: dist.sh refuses a release whose LLDB
+is built from another commit.
 
 ## License
 
@@ -282,10 +321,18 @@ The scripts and tests of this repository are licensed under either of
 - Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
 - MIT license ([LICENSE-MIT](LICENSE-MIT))
 
-at your option, as rx-rust is. The toolchain in the archives is LLVM, under
-the Apache License 2.0 with LLVM Exceptions (`Apache-2.0 WITH
-LLVM-exception`; `LICENSE.TXT` in the archive, `llvm/LICENSE.TXT` in
-[CDEF-inc/llvm-project](https://github.com/CDEF-inc/llvm-project)).
+at your option, as rx-rust is. In the archives:
+
+- clang, lld, LLDB and the LLVM tools are LLVM, under the Apache License
+  2.0 with LLVM Exceptions (`Apache-2.0 WITH LLVM-exception`; `LICENSE.TXT`
+  in the archive, `llvm/LICENSE.TXT` in
+  [CDEF-inc/llvm-project](https://github.com/CDEF-inc/llvm-project)). LLDB
+  links libxml2 (MIT) statically.
+- qemu-system-rx is QEMU, under the GPL version 2 (`COPYING.QEMU` in the
+  archive). Its source is
+  [CDEF-inc/qemu](https://github.com/CDEF-inc/qemu) at the commit in
+  `VERSIONS`. The libraries it needs (glib, pixman, ... on Linux; MinGW's
+  DLLs on Windows) keep their own licenses, which the SBOMs list.
 
 Unless you explicitly state otherwise, any contribution intentionally
 submitted for inclusion in the work by you, as defined in the Apache-2.0

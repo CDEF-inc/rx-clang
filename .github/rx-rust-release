@@ -1,3 +1,4 @@
-# The CDEF-inc/rx-rust release whose qemu-system-rx the CI runs the check
-# on (scripts/check-dist.sh). Only QEMU is taken from it.
+# The CDEF-inc/rx-rust release whose LLDB and qemu-system-rx (with their
+# libraries) go into the archive (scripts/dist.sh). Its LLDB must be built
+# from this repository's llvm-project commit: bump both together.
 toolchain-2026-11-14
