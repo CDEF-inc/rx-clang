@@ -158,10 +158,11 @@ else
     )
     args=()
     for c in "${cmds[@]}"; do args+=(-o "$c"); done
-    lldb_status=0
+    # LLDB's own exit status, not tr's (there is no pipefail).
     timeout -k 10 "${LLDB_TIMEOUT:-120}" "$LLDB" -b -x -o "settings set use-color false" \
       -o "target create $(w "$tmp/$o/test.elf")" -o "gdb-remote 127.0.0.1:$port" \
-      "${args[@]}" 2>&1 | tr -d '\r' > "$o/lldb.log" || lldb_status=$?
+      "${args[@]}" 2>&1 | tr -d '\r' > "$o/lldb.log"
+    lldb_status=${PIPESTATUS[0]}
     kill "$qemu_pid" 2> /dev/null || true
     wait "$qemu_pid" 2> /dev/null || true
     qemu_pid=
@@ -169,8 +170,11 @@ else
     expect() {
       grep -q -E -- "$2" "$o/lldb.log" && ok "lldb: $1" || fail "lldb: $1: no /$2/"
     }
-    [ $lldb_status = 124 ] || [ $lldb_status = 137 ] &&
-      fail "lldb: did not finish in ${LLDB_TIMEOUT:-120} s"
+    case $lldb_status in
+      0) ;;
+      124 | 137) fail "lldb: did not finish in ${LLDB_TIMEOUT:-120} s" ;;
+      *) fail "lldb: exited with status $lldb_status" ;;
+    esac
     expect "stops in C"           "frame #0: 0x[0-9a-f]+ test\\.elf\`c_sum6\\(s=.*, x=4\\) at other\\.c:[0-9]+"
     expect "C backtrace"          "frame #1: 0x[0-9a-f]+ test\\.elf\`main at main\\.c:101"
     expect "C argument"           '^\(int\) x = 4$'
