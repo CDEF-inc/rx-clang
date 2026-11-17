@@ -85,7 +85,21 @@ jobs:
           key: ccache-linux-${{ github.run_id }}
       - if: steps.install.outputs.cache-hit == 'true'
         run: zstd -q -d -c build/ci/install.tar.zst | tar -C build -xf -
-      - run: bash scripts/dist.sh
+      # LLDB and qemu-system-rx come from the archive of the rx-rust release
+      # in .github/rx-rust-release (scripts/dist.sh).
+      - id: rel
+        run: echo "tag=$(grep -v '^#' .github/rx-rust-release)" | tee -a "$GITHUB_OUTPUT"
+      - id: rxrust
+        uses: actions/cache@v6
+        with:
+          path: rx-rust/rx-toolchain-x86_64-linux.tar.xz
+          key: rx-rust-${{ steps.rel.outputs.tag }}-linux
+      - if: steps.rxrust.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p rx-rust
+          curl -fsSL --retry 3 -o rx-rust/rx-toolchain-x86_64-linux.tar.xz \
+            "https://github.com/CDEF-inc/rx-rust/releases/download/${{ steps.rel.outputs.tag }}/rx-toolchain-x86_64-linux.tar.xz"
+      - run: bash scripts/dist.sh rx-rust/rx-toolchain-x86_64-linux.tar.xz
       # The archive must not need a newer glibc than the runner's.
       - run: |
           tar -xJOf build/dist/rx-clang-x86_64-linux.tar.xz rx-clang-x86_64-linux/VERSIONS |
@@ -107,8 +121,8 @@ jobs:
 
   # The archive on other distributions, with nothing installed but what
   # unpacking needs (no compiler): scripts/check-dist.sh builds test/ with
-  # the archive's programs and runs it on the qemu-system-rx of the rx-rust
-  # release in .github/rx-rust-release.
+  # the archive's programs, runs it on the archive's qemu-system-rx and
+  # debugs it with the archive's lldb.
   linux-check:
     needs: linux
     strategy:
@@ -134,20 +148,8 @@ jobs:
             apt_install
           }
       - uses: actions/checkout@v7
-      - id: rel
-        run: echo "tag=$(grep -v '^#' .github/rx-rust-release)" | tee -a "$GITHUB_OUTPUT"
-      - id: qemu
-        uses: actions/cache@v6
-        with:
-          path: rx-rust/rx-toolchain-x86_64-linux.tar.xz
-          key: rx-rust-${{ steps.rel.outputs.tag }}-linux
-      - if: steps.qemu.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p rx-rust
-          curl -fsSL --retry 3 -o rx-rust/rx-toolchain-x86_64-linux.tar.xz \
-            "https://github.com/CDEF-inc/rx-rust/releases/download/${{ steps.rel.outputs.tag }}/rx-toolchain-x86_64-linux.tar.xz"
       - uses: actions/download-artifact@v8
         with:
           name: rx-clang-x86_64-linux
           path: dist
-      - run: bash scripts/check-dist.sh dist/rx-clang-x86_64-linux.tar.xz rx-rust/rx-toolchain-x86_64-linux.tar.xz
+      - run: bash scripts/check-dist.sh dist/rx-clang-x86_64-linux.tar.xz

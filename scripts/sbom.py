@@ -4,17 +4,21 @@ and the same as a CycloneDX 1.6 JSON BOM (--cyclonedx).
 
   sbom.py --out FILE [--cyclonedx FILE] --name NAME
           --rx-clang COMMIT --llvm COMMIT --clang-version TEXT
+          [--rx-rust-sbom FILE]
 
-scripts/dist.sh calls it. The archive holds programs of one source tree,
-the llvm-project fork (clang, lld, llvm-mc, llc, the LLVM binary tools and
-clang's resource headers), built by this repository's scripts. The
-libraries the programs link dynamically (glibc, libstdc++, libgcc_s, zlib
-on Linux) are the system's, not in the archive, so they are not listed; on
-Windows the MSVC runtime is linked statically.
+scripts/dist.sh calls it. The archive holds the programs of the
+llvm-project fork (clang, lld, llvm-mc, llc, the LLVM binary tools and
+clang's resource headers), built by this repository's scripts, and LLDB
+and qemu-system-rx with their libraries, taken from an rx-rust release
+archive. The SPDX SBOM of that archive (--rx-rust-sbom) describes those:
+its packages for QEMU, libxml2 (in LLDB), the libraries QEMU needs and
+rx-rust itself are copied, with their relationships. The libraries the
+programs link from the system (glibc, libstdc++, libgcc_s, zlib on Linux)
+are not in the archive, so they are not listed; on Windows the MSVC runtime
+is linked statically.
 
 It follows rx-rust's scripts/sbom.py (the same layout of packages,
-relationships and CycloneDX mapping), without the parts rx-rust's archive
-has and this one does not (rustc, its crates, QEMU and its libraries).
+relationships and CycloneDX mapping), without rustc and its crates.
 """
 import argparse
 import datetime
@@ -104,11 +108,45 @@ def cyclonedx(doc):
     }
 
 
+LLVM = spdx_id("Package", "llvm-project")
+
+
+def add_from_rx_rust(path, top, pkgs, rels):
+    """Copies from rx-rust's SPDX SBOM at `path` the packages of what this
+    archive takes from it: QEMU, what QEMU and LLVM (LLDB) depend on (QEMU's
+    shared libraries, libxml2), and rx-rust (which built them). The archive
+    `top` contains all but rx-rust, which it is partly generated from."""
+    with open(path, encoding="utf-8") as f:
+        src = json.load(f)
+    by_id = {p["SPDXID"]: p for p in src["packages"]}
+    qemu = spdx_id("Package", "qemu")
+    rx_rust = spdx_id("Package", "rx-rust")
+    if qemu not in by_id or rx_rust not in by_id:
+        raise SystemExit(f"{path}: no qemu or rx-rust package")
+    deps = [r for r in src["relationships"] if r["relationshipType"] == "DEPENDS_ON"
+            and r["spdxElementId"] in (qemu, LLVM)]
+    take = [qemu] + [r["relatedSpdxElement"] for r in deps
+                     if r["relatedSpdxElement"] in by_id]
+    for sid in dict.fromkeys(take):
+        pkgs.append(by_id[sid])
+        rels.append({"spdxElementId": top, "relationshipType": "CONTAINS",
+                     "relatedSpdxElement": sid})
+    rels.extend(deps)
+    p = dict(by_id[rx_rust])
+    p["comment"] = ("The rx-rust release whose archive LLDB and qemu-system-rx "
+                    "(with their libraries) are taken from.")
+    pkgs.append(p)
+    rels.append({"spdxElementId": top, "relationshipType": "GENERATED_FROM",
+                 "relatedSpdxElement": rx_rust})
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     for a in ("out", "name", "rx-clang", "llvm", "clang-version"):
         ap.add_argument("--" + a, required=True)
     ap.add_argument("--cyclonedx", help="also write a CycloneDX 1.6 JSON BOM here")
+    ap.add_argument("--rx-rust-sbom",
+                    help="the SPDX SBOM of the rx-rust archive LLDB and QEMU come from")
     a = ap.parse_args()
 
     pkgs, rels = [], []
@@ -135,7 +173,11 @@ def main():
         purl=f"pkg:github/CDEF-inc/llvm-project@{a.llvm}",
         comment=f"The LLVM fork with the RX backend ({a.clang_version}): clang, "
                 "clang's resource headers, compiler-rt's builtins, lld (ld.lld), "
-                "llvm-mc, llc and the LLVM binary tools."))
+                "llvm-mc, llc and the LLVM binary tools"
+                + (", and LLDB (built by rx-rust from the same commit)."
+                   if a.rx_rust_sbom else ".")))
+    if a.rx_rust_sbom:
+        add_from_rx_rust(a.rx_rust_sbom, top, pkgs, rels)
 
     doc = {
         "spdxVersion": "SPDX-2.3",

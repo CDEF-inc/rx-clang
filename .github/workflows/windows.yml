@@ -17,6 +17,7 @@ on:
       - scripts/msvc.bat
       - scripts/builtins.sh
       - scripts/check-dist.sh
+      - scripts/sbom.py
       - test/**
       - .github/rx-rust-release
   push:
@@ -62,8 +63,24 @@ jobs:
       - if: steps.install.outputs.cache-hit == 'true'
         shell: bash
         run: tar -C build -xf build/ci/install.tar
+      # LLDB and qemu-system-rx come from the zip of the rx-rust release in
+      # .github/rx-rust-release (scripts/dist.sh).
+      - id: rel
+        shell: bash
+        run: echo "tag=$(grep -v '^#' .github/rx-rust-release)" | tee -a "$GITHUB_OUTPUT"
+      - id: rxrust
+        uses: actions/cache@v6
+        with:
+          path: rx-rust/rx-toolchain-x86_64-windows.zip
+          key: rx-rust-${{ steps.rel.outputs.tag }}-windows
+      - if: steps.rxrust.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          mkdir -p rx-rust
+          curl -fsSL --retry 3 -o rx-rust/rx-toolchain-x86_64-windows.zip \
+            "https://github.com/CDEF-inc/rx-rust/releases/download/${{ steps.rel.outputs.tag }}/rx-toolchain-x86_64-windows.zip"
       - shell: bash
-        run: bash scripts/dist.sh
+        run: bash scripts/dist.sh rx-rust/rx-toolchain-x86_64-windows.zip
       - uses: actions/upload-artifact@v7
         with:
           name: rx-clang-x86_64-windows
@@ -78,21 +95,6 @@ jobs:
           name: build-logs-windows
           path: build/llvm/*.log
           if-no-files-found: ignore
-      # The zip with the qemu-system-rx of the rx-rust release in
-      # .github/rx-rust-release (scripts/check-dist.sh).
-      - id: rel
-        shell: bash
-        run: echo "tag=$(grep -v '^#' .github/rx-rust-release)" | tee -a "$GITHUB_OUTPUT"
-      - id: qemu
-        uses: actions/cache@v6
-        with:
-          path: rx-rust/rx-toolchain-x86_64-windows.zip
-          key: rx-rust-${{ steps.rel.outputs.tag }}-windows
-      - if: steps.qemu.outputs.cache-hit != 'true'
-        shell: bash
-        run: |
-          mkdir -p rx-rust
-          curl -fsSL --retry 3 -o rx-rust/rx-toolchain-x86_64-windows.zip \
-            "https://github.com/CDEF-inc/rx-rust/releases/download/${{ steps.rel.outputs.tag }}/rx-toolchain-x86_64-windows.zip"
+      # The zip with its own qemu-system-rx and lldb (scripts/check-dist.sh).
       - shell: bash
-        run: bash scripts/check-dist.sh build/dist/rx-clang-x86_64-windows.zip rx-rust/rx-toolchain-x86_64-windows.zip
+        run: bash scripts/check-dist.sh build/dist/rx-clang-x86_64-windows.zip
